@@ -2,12 +2,19 @@ name: APK Builder
 
 # Produces an installable APK as a workflow artifact — no signing secrets needed.
 #
-#   debug  : assembled with the throwaway debug key GitHub Actions' runner provides, so it is
-#            directly installable. No minification, so it is ~2x the size of a release APK.
-#   foss   : minified + resource-shrunk (what upstream ships, ~32 MB per ABI). Unsigned by
-#            default, so this workflow signs it with a freshly generated key: installable, but
-#            its signature will not match a previously installed foss build from another key,
-#            and it is NOT the upstream release key (auto-updates from upstream won't accept it).
+# A push to master builds `foss`, the release-equivalent build (minified + resource-shrunk,
+# ~30 MB per ABI). Run the workflow manually to pick a different variant:
+#
+#   foss   : what upstream ships. Gradle leaves it unsigned, so this workflow signs it with a key
+#            generated inside the run: installable, but that signature will not match a foss build
+#            signed by another key, and it is NOT the upstream release key (so it cannot receive
+#            upstream auto-updates).
+#   debug  : debug-signed by the runner and debuggable (logcat-friendly, no minification), but
+#            roughly 2x the size because R8 and resource shrinking are off.
+#
+# Why not `assembleRelease`: app/build.gradle.kts applies the google-services + crashlytics
+# plugins whenever the requested task name contains "Release", and those need the
+# GOOGLE_SERVICES_TEXT secret this fork does not have. `foss` is the release build minus Firebase.
 #
 # Triggers: push to master, or run it manually (the dropdown lets you pick the variant).
 # Upstream's "Release Builder" (build_push.yml) only runs on the `release` branch and needs the
@@ -20,9 +27,9 @@ on:
         description: 'Build type'
         type: choice
         options:
-          - debug
           - foss
-        default: debug
+          - debug
+        default: foss
       all_abis:
         description: 'Upload every ABI + universal (default: arm64-v8a only)'
         type: boolean
@@ -40,12 +47,13 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ inputs.variant || 'debug' }}
+    name: Build ${{ inputs.variant || 'foss' }}
     runs-on: ubuntu-latest
 
     env:
-      BUILD_TASK: ${{ inputs.variant == 'foss' && ':app:assembleFoss' || ':app:assembleDebug' }}
-      APK_DIR: ${{ inputs.variant == 'foss' && 'foss' || 'debug' }}
+      VARIANT: ${{ inputs.variant || 'foss' }}
+      BUILD_TASK: ${{ inputs.variant == 'debug' && ':app:assembleDebug' || ':app:assembleFoss' }}
+      APK_DIR: ${{ inputs.variant == 'debug' && 'debug' || 'foss' }}
 
     steps:
       - name: Clone repo
@@ -67,7 +75,7 @@ jobs:
         run: ./gradlew -I .github/gradle/jitpack-fallbacks.gradle ${{ env.BUILD_TASK }} --console=plain
 
       - name: Sign with a throwaway key
-        if: inputs.variant == 'foss'
+        if: env.VARIANT == 'foss'
         run: |
           set -euo pipefail
           keytool -genkeypair -keystore /tmp/throwaway.keystore \

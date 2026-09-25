@@ -1,6 +1,5 @@
 package eu.kanade.presentation.util
 
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
@@ -46,8 +45,8 @@ fun VolumeKeyPageScrollHandler(
     VolumeKeyPageScrollHandlerImpl(
         key = state,
         canScroll = { state.canScrollForward || state.canScrollBackward },
-        viewportHeight = { state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset },
-        scrollBy = { state.scrollBy(it) },
+        pageLayout = { state.toPageScrollLayout() },
+        scrollToIndex = { state.scrollToItem(it) },
         enabled = enabled,
     )
 }
@@ -60,18 +59,74 @@ fun VolumeKeyPageScrollHandler(
     VolumeKeyPageScrollHandlerImpl(
         key = state,
         canScroll = { state.canScrollForward || state.canScrollBackward },
-        viewportHeight = { state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset },
-        scrollBy = { state.scrollBy(it) },
+        pageLayout = { state.toPageScrollLayout() },
+        scrollToIndex = { state.scrollToItem(it) },
         enabled = enabled,
     )
+}
+
+private class PageScrollLayout(
+    val viewportHeight: Int,
+    val firstIndex: Int,
+    val rowHeight: Int,
+    val itemsPerRow: Int,
+)
+
+private fun LazyListState.toPageScrollLayout(): PageScrollLayout {
+    val info = layoutInfo
+    val visible = info.visibleItemsInfo
+    val rowHeight = if (visible.isNotEmpty()) visible.sumOf { it.size } / visible.size else 0
+    return PageScrollLayout(
+        viewportHeight = info.viewportEndOffset - info.viewportStartOffset,
+        firstIndex = firstVisibleItemIndex,
+        rowHeight = rowHeight,
+        itemsPerRow = 1,
+    )
+}
+
+private fun LazyGridState.toPageScrollLayout(): PageScrollLayout {
+    val info = layoutInfo
+    val visible = info.visibleItemsInfo
+    val firstRow = visible.firstOrNull()?.row
+    var itemsPerRow = 1
+    var rowHeight = 0
+    if (firstRow != null) {
+        val inFirstRow = visible.filter { it.row == firstRow }
+        itemsPerRow = inFirstRow.size.coerceAtLeast(1)
+        val top = inFirstRow.minOf { it.offset.y }
+        val bottom = inFirstRow.maxOf { it.offset.y + it.size.height }
+        val nextRowTop = visible.filter { it.row > firstRow }.minOfOrNull { it.offset.y }
+        rowHeight = nextRowTop?.minus(top) ?: (bottom - top)
+    }
+    return PageScrollLayout(
+        viewportHeight = info.viewportEndOffset - info.viewportStartOffset,
+        firstIndex = firstVisibleItemIndex,
+        rowHeight = rowHeight,
+        itemsPerRow = itemsPerRow,
+    )
+}
+
+/**
+ * Index the new first row should land on: one page is however many whole rows fit in the
+ * viewport (3.7 visible rows means pages of 3 rows), and pages always start at a row top.
+ */
+private fun PageScrollLayout.targetPageIndex(up: Boolean): Int? {
+    if (viewportHeight <= 0 || rowHeight <= 0) return null
+    val rowsPerPage = (viewportHeight / rowHeight).coerceAtLeast(1)
+    val target = if (up) {
+        firstIndex - rowsPerPage * itemsPerRow
+    } else {
+        firstIndex + rowsPerPage * itemsPerRow
+    }
+    return if (up) target.coerceAtLeast(0) else target
 }
 
 @Composable
 private fun VolumeKeyPageScrollHandlerImpl(
     key: Any,
     canScroll: () -> Boolean,
-    viewportHeight: () -> Int,
-    scrollBy: suspend (Float) -> Unit,
+    pageLayout: () -> PageScrollLayout,
+    scrollToIndex: suspend (Int) -> Unit,
     enabled: () -> Boolean,
 ) {
     val scope = rememberCoroutineScope()
@@ -83,9 +138,8 @@ private fun VolumeKeyPageScrollHandlerImpl(
                 get() = currentEnabled && canScroll()
 
             override fun pageScroll(up: Boolean) {
-                val height = viewportHeight()
-                if (height <= 0) return
-                scope.launch { scrollBy(if (up) -height.toFloat() else height.toFloat()) }
+                val target = pageLayout().targetPageIndex(up) ?: return
+                scope.launch { scrollToIndex(target) }
             }
         }
     }

@@ -1,6 +1,7 @@
 package eu.kanade.presentation.util
 
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridItemInfo
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -66,43 +67,38 @@ fun VolumeKeyPageScrollHandler(
 }
 
 private class PageScrollLayout(
-    val viewportHeight: Int,
+    val rowsPerPage: Int,
     val firstIndex: Int,
-    val rowHeight: Int,
     val itemsPerRow: Int,
 )
 
 private fun LazyListState.toPageScrollLayout(): PageScrollLayout {
     val info = layoutInfo
-    val visible = info.visibleItemsInfo
-    val rowHeight = if (visible.isNotEmpty()) visible.sumOf { it.size } / visible.size else 0
+    val wholeItems =
+        info.visibleItemsInfo.count { it.offset >= info.viewportStartOffset - 1 && it.offset + it.size <= info.viewportEndOffset + 1 }
     return PageScrollLayout(
-        viewportHeight = info.viewportEndOffset - info.viewportStartOffset,
+        rowsPerPage = wholeItems.coerceAtLeast(1),
         firstIndex = firstVisibleItemIndex,
-        rowHeight = rowHeight,
         itemsPerRow = 1,
     )
 }
 
 private fun LazyGridState.toPageScrollLayout(): PageScrollLayout {
     val info = layoutInfo
-    val visible = info.visibleItemsInfo
-    val firstRow = visible.firstOrNull()?.row
-    var itemsPerRow = 1
-    var rowHeight = 0
-    if (firstRow != null) {
-        val inFirstRow = visible.filter { it.row == firstRow }
-        itemsPerRow = inFirstRow.size.coerceAtLeast(1)
-        val top = inFirstRow.minOf { it.offset.y }
-        val bottom = inFirstRow.maxOf { it.offset.y + it.size.height }
-        val nextRowTop = visible.filter { it.row > firstRow }.minOfOrNull { it.offset.y }
-        rowHeight = nextRowTop?.minus(top) ?: (bottom - top)
-    }
+    val rows = info.visibleItemsInfo.groupBy { it.row }
+    val wholeRows =
+        rows.count { (_, items) ->
+            val top = items.minOf { it.offset.y }
+            val bottom = items.maxOf { it.offset.y + it.size.height }
+            top >= info.viewportStartOffset - 1 && bottom <= info.viewportEndOffset + 1
+        }
+    val itemsPerRow = rows.entries.firstOrNull { (row, _) -> row != LazyGridItemInfo.UnknownRow }
+        ?.let { (_, items) -> items.size }
+        ?: 1
     return PageScrollLayout(
-        viewportHeight = info.viewportEndOffset - info.viewportStartOffset,
+        rowsPerPage = wholeRows.coerceAtLeast(1),
         firstIndex = firstVisibleItemIndex,
-        rowHeight = rowHeight,
-        itemsPerRow = itemsPerRow,
+        itemsPerRow = itemsPerRow.coerceAtLeast(1),
     )
 }
 
@@ -110,9 +106,7 @@ private fun LazyGridState.toPageScrollLayout(): PageScrollLayout {
  * Index the new first row should land on: one page is however many whole rows fit in the
  * viewport (3.7 visible rows means pages of 3 rows), and pages always start at a row top.
  */
-private fun PageScrollLayout.targetPageIndex(up: Boolean): Int? {
-    if (viewportHeight <= 0 || rowHeight <= 0) return null
-    val rowsPerPage = (viewportHeight / rowHeight).coerceAtLeast(1)
+private fun PageScrollLayout.targetPageIndex(up: Boolean): Int {
     val target = if (up) {
         firstIndex - rowsPerPage * itemsPerRow
     } else {
@@ -138,8 +132,7 @@ private fun VolumeKeyPageScrollHandlerImpl(
                 get() = currentEnabled && canScroll()
 
             override fun pageScroll(up: Boolean) {
-                val target = pageLayout().targetPageIndex(up) ?: return
-                scope.launch { scrollToIndex(target) }
+                scope.launch { scrollToIndex(pageLayout().targetPageIndex(up)) }
             }
         }
     }
